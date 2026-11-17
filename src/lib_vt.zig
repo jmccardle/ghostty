@@ -426,7 +426,11 @@ pub const std_options: std.Options = opts: {
         options.allow_stack_tracing = false;
     }
 
-    if (builtin.target.cpu.arch.isWasm()) {
+    // Emscripten is left out. Its programs use the C ABI and have no
+    // `log` import, so they get logs through the callback below.
+    if (builtin.target.cpu.arch.isWasm() and
+        builtin.target.os.tag != .emscripten)
+    {
         // In non-debug modes, we want to ship effectively no logging
         // warn and lower add ~200KB at the time of this comment.
         if (builtin.mode == .debug) {
