@@ -181,7 +181,12 @@ pub fn build(b: *std.Build) !void {
     const install_lib_vt = config.emit_lib_vt or config.is_dep;
     const native_freestanding = config.target.result.os.tag == .freestanding and
         !config.target.result.cpu.arch.isWasm();
+    const emscripten = config.target.result.os.tag == .emscripten;
     const libghostty_vt_shared: ?buildpkg.GhosttyLibVt = shared: {
+        // Emscripten programs link the static library into their own
+        // module with emcc, so there is no standalone module to build.
+        if (emscripten) break :shared null;
+
         if (config.target.result.cpu.arch.isWasm()) {
             break :shared try buildpkg.GhosttyLibVt.initWasm(
                 b,
@@ -237,7 +242,7 @@ pub fn build(b: *std.Build) !void {
             static_lib_name,
         ).step);
 
-        if (native_freestanding) {
+        if (native_freestanding or emscripten) {
             b.getInstallStep().dependOn(&b.addInstallDirectory(.{
                 .source_dir = b.path("include/ghostty"),
                 .install_dir = .header,
