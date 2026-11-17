@@ -31,6 +31,7 @@ const Row = pagepkg.Row;
 const log = std.log.scoped(.page_list);
 const native_freestanding = builtin.target.os.tag == .freestanding and
     !builtin.target.cpu.arch.isWasm();
+const emscripten = builtin.target.os.tag == .emscripten;
 
 /// The number of pages we preheat the page pool with. For operating systems
 /// that support it, pages are demand-paged (see PagePool) so this only
@@ -330,7 +331,13 @@ const std_size = Page.layout(std_capacity).total_size;
 ///
 /// Test builds use the native pool even on wasm so that pool memory goes
 /// through the testing allocator and participates in leak detection.
-const wasm_page_pool = builtin.target.cpu.arch.isWasm() and !builtin.is_test;
+///
+/// Emscripten uses the native pool as well. Its libc owns the module's
+/// linear memory, so growing the memory behind its back with memory.grow
+/// corrupts the libc heap.
+const wasm_page_pool = builtin.target.cpu.arch.isWasm() and
+    !emscripten and
+    !builtin.is_test;
 
 /// The memory pool we use for page memory buffers. We use a separate pool
 /// so we can allocate these with a page allocator. We have to use a page
@@ -579,8 +586,9 @@ fn initialCapacity(cols: size.CellCountInt) Capacity {
 /// Returns the allocator used for underlying page allocations.
 ///
 /// `alloc` is the caller-provided allocator. It is used on native freestanding
-/// targets, where no OS page allocator is available. Other targets select a
-/// platform-specific allocator below.
+/// targets, where no OS page allocator is available, and on Emscripten, where
+/// libc owns the memory an OS page allocator would hand out. Other targets
+/// select a platform-specific allocator below.
 inline fn pageAllocator(alloc: Allocator) Allocator {
     // In tests we use our testing allocator so we can detect leaks.
     if (builtin.is_test) return std.testing.allocator;
@@ -588,6 +596,11 @@ inline fn pageAllocator(alloc: Allocator) Allocator {
     // Native freestanding targets don't have an OS page allocator, so use
     // the allocator provided by the embedder.
     if (native_freestanding) return alloc;
+
+    // Emscripten's libc owns linear memory, and the Zig page allocator
+    // for wasm grows that memory directly. Use the allocator provided by
+    // the embedder, which defaults to libc.
+    if (emscripten) return alloc;
 
     // On non-macOS we use our standard Zig page allocator.
     if (!builtin.target.os.tag.isDarwin()) return std.heap.page_allocator;
@@ -776,8 +789,12 @@ fn initPages(
         // interface will always memset to 0xAA for undefined. On freestanding
         // (WASM), the WasmAllocator reuses freed slots without zeroing since
         // only fresh memory.grow pages are guaranteed zero by the WASM spec.
-        // On native, the OS page allocator (mmap) returns zeroed pages.
-        if (comptime std.debug.runtime_safety or builtin.target.os.tag == .freestanding)
+        // On Emscripten, page memory comes from the caller's allocator,
+        // which doesn't zero either. On native, the OS page allocator
+        // (mmap) returns zeroed pages.
+        if (comptime std.debug.runtime_safety or
+            builtin.target.os.tag == .freestanding or
+            emscripten)
             @memset(page_buf, 0);
 
         // Initialize the first set of pages to contain our viewport so that
@@ -5369,13 +5386,16 @@ inline fn createPageExt(
         page_alloc.free(page_buf);
 
     // In runtime safety modes, allocators fill with 0xAA. On freestanding
-    // (WASM), the WasmAllocator reuses freed slots without zeroing.
+    // (WASM), the WasmAllocator reuses freed slots without zeroing. On
+    // Emscripten, the caller's allocator doesn't zero.
     //
     // Otherwise, we rely on pool item buffers being zeroed: fresh items
     // come from the OS page allocator (zeroed pages), destroyNodeExt
     // zeroes buffers before returning them to the pool, and the pool
     // never writes into its items (see PagePool).
-    if (comptime std.debug.runtime_safety or builtin.target.os.tag == .freestanding)
+    if (comptime std.debug.runtime_safety or
+        builtin.target.os.tag == .freestanding or
+        emscripten)
         @memset(page_buf, 0);
 
     page.* = .{

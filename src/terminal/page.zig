@@ -377,7 +377,13 @@ pub const Page = struct {
     /// disabled or the target is freestanding. This uses the libc allocator.
     pub inline fn assertIntegrity(self: *const Page) void {
         if (comptime build_options.slow_runtime_safety and builtin.target.os.tag != .freestanding) {
-            var debug_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+            // Emscripten's libc owns linear memory, and the Zig page
+            // allocator for wasm grows that memory directly.
+            const backing = if (builtin.target.os.tag == .emscripten)
+                std.heap.c_allocator
+            else
+                std.heap.page_allocator;
+            var debug_allocator: std.heap.SafeAllocator = .init(backing, .{});
             defer _ = debug_allocator.deinit();
             const alloc = debug_allocator.allocator();
             self.verifyIntegrity(alloc) catch |err| {
